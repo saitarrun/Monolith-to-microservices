@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notifications-svc
+  labels:
+    app: notifications-svc
+spec:
+  replicas: {{ .Values.notifications.replicas }}
+  selector:
+    matchLabels:
+      app: notifications-svc
+  template:
+    metadata:
+      labels:
+        app: notifications-svc
+    spec:
+      containers:
+        - name: notifications-svc
+          image: {{ .Values.notifications.image }}
+          env:
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              valueFrom:
+                secretKeyRef:
+                  name: kafka-creds
+                  key: brokers
+            - name: KAFKA_GROUP_ID
+              value: notifications-group

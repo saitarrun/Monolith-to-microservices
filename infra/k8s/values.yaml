@@ -1,0 +1,19 @@
+monolith:
+  image: monolith:latest
+  replicas: 2
+  service:
+    port: 8000
+
+orders:
+  image: orders-svc:latest
+  replicas: 2
+  service:
+    port: 8000
+
+notifications:
+  image: notifications-svc:latest
+  replicas: 1
+
+ingress:
+  enabled: true
+  host: demo.local

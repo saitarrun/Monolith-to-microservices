@@ -1,0 +1,135 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  AWS_REGION: us-west-2
+  ECR_REPOSITORY_MONOLITH: monolith
+  ECR_REPOSITORY_ORDERS: orders-svc
+  ECR_REPOSITORY_NOTIFICATIONS: notifications-svc
+
+jobs:
+  code-quality:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install Python tools
+      run: pip install ruff black bandit
+
+    - name: Lint Python Code
+      run: |
+        ruff check .
+        black --check .
+    
+    - name: Security scan Python Code
+      run: |
+        bandit -r apps/monolith apps/orders-svc --skip B104
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+
+    - name: Lint Node Code
+      run: |
+        cd apps/notifications-svc
+        npm update # install dependencies
+        npm run lint --if-present
+
+    - name: Security scan Node Code
+      run: |
+        cd apps/notifications-svc
+        npm audit
+
+  build-and-push:
+    needs: code-quality
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    # Monolith Build
+    - name: Build, tag, and push Monolith image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        cd apps/monolith
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY_MONOLITH:$IMAGE_TAG .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY_MONOLITH:$IMAGE_TAG
+        docker tag $ECR_REGISTRY/$ECR_REPOSITORY_MONOLITH:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY_MONOLITH:latest
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY_MONOLITH:latest
+
+    # Orders Service Build
+    - name: Build, tag, and push Orders Service image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        cd apps/orders-svc
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY_ORDERS:$IMAGE_TAG .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY_ORDERS:$IMAGE_TAG
+        docker tag $ECR_REGISTRY/$ECR_REPOSITORY_ORDERS:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY_ORDERS:latest
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY_ORDERS:latest
+
+    # Notifications Service Build
+    - name: Build, tag, and push Notification Service image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        cd apps/notifications-svc
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY_NOTIFICATIONS:$IMAGE_TAG .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY_NOTIFICATIONS:$IMAGE_TAG
+        docker tag $ECR_REGISTRY/$ECR_REPOSITORY_NOTIFICATIONS:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY_NOTIFICATIONS:latest
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY_NOTIFICATIONS:latest
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Update Kubeconfig
+      run: aws eks update-kubeconfig --name demo-cluster --region ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - name: Deploy with Helm
+      run: |
+        helm upgrade --install demo infra/k8s \
+          --set monolith.image=${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY_MONOLITH:${{ github.sha }} \
+          --set orders.image=${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY_ORDERS:${{ github.sha }} \
+          --set notifications.image=${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY_NOTIFICATIONS:${{ github.sha }}

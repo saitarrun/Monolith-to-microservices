@@ -1,0 +1,12 @@
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+__pycache__
+*.py[cod]
+*$py.class
+.git
+.gitignore
+.dockerignore

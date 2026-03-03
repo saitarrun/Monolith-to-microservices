@@ -1,0 +1,88 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:14
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: monolith
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.3.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:7.3.0
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+  monolith:
+    build:
+      context: ./apps/monolith
+    command: gunicorn monolith.wsgi:application --bind 0.0.0.0:8000
+    volumes:
+      - ./apps/monolith:/app
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+      - redis
+      - kafka
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@db:5432/monolith
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+
+  orders-svc:
+    build:
+      context: ./apps/orders-svc
+    command: uvicorn main:app --host 0.0.0.0 --port 8001 --reload
+    volumes:
+      - ./apps/orders-svc:/app
+    ports:
+      - "8001:8001"
+    depends_on:
+      - db
+      - kafka
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@db:5432/monolith
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_GROUP_ID: orders-svc-local
+      PORT: 8001
+
+  notifications-svc:
+    build:
+      context: ./apps/notifications-svc
+    command: npm start
+    volumes:
+      - ./apps/notifications-svc:/app
+      - /app/node_modules
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      PORT: 3000
+
+volumes:
+  postgres_data:
