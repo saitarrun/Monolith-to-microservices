@@ -7,3 +7,4 @@ gunicorn>=21.2
 python-dotenv>=1.0
 dj-database-url>=2.1
 django-cors-headers>=4.3.0
+stripe>=7.0.0
