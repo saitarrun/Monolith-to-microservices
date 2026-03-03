@@ -100,5 +100,14 @@ services:
     depends_on:
       - prometheus
 
+  storefront:
+    build:
+      context: ./apps/storefront
+    ports:
+      - "80:80"
+    depends_on:
+      - monolith
+      - orders-svc
+
 volumes:
   postgres_data:

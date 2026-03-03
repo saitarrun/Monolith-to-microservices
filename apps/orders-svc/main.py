@@ -1,5 +1,6 @@
 import asyncio
 from fastapi import FastAPI, Depends
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from contextlib import asynccontextmanager
 import threading
@@ -20,6 +21,14 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(title="Orders Microservice", version="2.0.0", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Add Prometheus Instrumentator
 Instrumentator().instrument(app).expose(app)

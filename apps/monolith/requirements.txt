@@ -6,3 +6,4 @@ confluent-kafka>=2.3
 gunicorn>=21.2
 python-dotenv>=1.0
 dj-database-url>=2.1
+django-cors-headers>=4.3.0
