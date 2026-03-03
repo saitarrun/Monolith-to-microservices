@@ -7,6 +7,8 @@ import database
 import models
 from consumer import run_consumer
 
+from prometheus_fastapi_instrumentator import Instrumentator
+
 # Create tables
 models.Base.metadata.create_all(bind=database.engine)
 
@@ -18,6 +20,9 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(title="Orders Microservice", version="2.0.0", lifespan=lifespan)
+
+# Add Prometheus Instrumentator
+Instrumentator().instrument(app).expose(app)
 
 # Dependency
 def get_db():

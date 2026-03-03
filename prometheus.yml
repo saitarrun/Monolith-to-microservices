@@ -1,0 +1,7 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: 'orders-microservice'
+    static_configs:
+      - targets: ['orders-svc:8001']

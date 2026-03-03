@@ -14,3 +14,9 @@ class Order(Base):
     
     # For backfill/verification
     original_id = Column(Integer, unique=True, index=True) 
+
+class IdempotentEvent(Base):
+    __tablename__ = "idempotent_events"
+    
+    event_id = Column(String, primary_key=True, index=True)
+    processed_at = Column(DateTime, default=datetime.datetime.utcnow)

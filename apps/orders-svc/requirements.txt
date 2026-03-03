@@ -6,3 +6,4 @@ pydantic>=2.0
 confluent-kafka>=2.3
 python-dotenv>=1.0
 requests>=2.31
+prometheus-fastapi-instrumentator>=6.0.0
