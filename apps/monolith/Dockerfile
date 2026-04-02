@@ -16,7 +16,7 @@ RUN pip wheel --no-cache-dir --no-deps --wheel-dir /app/wheels -r requirements.t
 # Stage 2: Final
 FROM python:3.11-slim
 
-RUN groupadd -r appuser && useradd -r -g appuser appuser
+RUN groupadd -r appuser && useradd -m -r -g appuser appuser
 
 WORKDIR /app
 

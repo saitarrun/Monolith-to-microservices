@@ -273,7 +273,9 @@ def delete_user(user_id):
 # -------------------------------------------------------
 # Application Entry Point
 # -------------------------------------------------------
+# Initialize DB on startup
+init_db()
+
 if __name__ == '__main__':
-    init_db()
     port = int(os.environ.get('PORT', 8002))
     app.run(host='0.0.0.0', port=port, debug=os.environ.get('DEBUG', 'false').lower() == 'true')

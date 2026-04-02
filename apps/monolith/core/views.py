@@ -49,12 +49,23 @@ class StripeWebhookView(APIView):
 
         # Handle the event
         if event.type == 'payment_intent.succeeded':
+            # Use to_dict() to safely use .get() on the object and its metadata
             payment_intent = event.data.object
             
+            # Simple helper to get from Stripe metadata which might be a StripeObject
+            def get_metadata(obj, key, default):
+                meta = getattr(obj, 'metadata', {})
+                if hasattr(meta, 'get'):
+                    return meta.get(key, default)
+                try:
+                    return meta[key]
+                except (KeyError, TypeError):
+                    return default
+
             # 1. Create Order in Monolith DB
             order = Order.objects.create(
-                user_id=payment_intent.metadata.get('user_id', 1),
-                product_id=payment_intent.metadata.get('product_id', 'unknown'),
+                user_id=get_metadata(payment_intent, 'user_id', 1),
+                product_id=get_metadata(payment_intent, 'product_id', 'unknown'),
                 amount=payment_intent.amount / 100.0,
                 status='PAID' # Set to PAID immediately since Stripe confirmed
             )

@@ -48,7 +48,7 @@ services:
       - redis
       - kafka
     environment:
-      DATABASE_URL: postgres://postgres:postgres@db:5432/monolith
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/monolith
       REDIS_URL: redis://redis:6379/0
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       # Strangler Fig Phase 6: Dual-write to user-svc
@@ -67,7 +67,7 @@ services:
       - db
       - kafka
     environment:
-      DATABASE_URL: postgres://postgres:postgres@db:5432/monolith
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/monolith
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       KAFKA_GROUP_ID: orders-svc-local
       PORT: 8001
@@ -84,7 +84,7 @@ services:
     depends_on:
       - db
     environment:
-      DATABASE_URL: postgres://postgres:postgres@db:5432/monolith
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/monolith
       PORT: 8002
       DEBUG: "true"
 
