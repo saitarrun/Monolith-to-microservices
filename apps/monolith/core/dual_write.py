@@ -90,6 +90,7 @@ def dual_write_user_db(user_data: dict) -> dict | None:
     if not DUAL_WRITE_ENABLED or not USER_SVC_DB_URL:
         return None
 
+    conn = None
     try:
         conn = psycopg2.connect(USER_SVC_DB_URL)
         conn.autocommit = False
