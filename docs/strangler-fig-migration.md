@@ -14,23 +14,23 @@ In this guide, we walk through implementing the Strangler Fig pattern on **AWS E
 
 The key idea is simple: put a routing layer in front of your monolith that can selectively forward requests to new microservices. As you extract functionality from the monolith, you update the routing rules. The monolith and microservices run side by side, and users never notice the transition.
 
-![Strangler Fig Pattern Overview](images/strangler_fig_overview.png)
+![Strangler Fig Pattern Overview](/Users/saitarrunpitta/.gemini/antigravity/brain/323e2726-ef37-4e04-aa67-924a1f6dde22/strangler_fig_overview_1775088696203.png)
 
-> **At any point during the migration, you have a fully working system. You can stop, pause, or roll back without any downtime.**
+```mermaid
+graph TD
+    A[Client] --> B[Istio Ingress Gateway]
+    B -->|"/api/users/*"| C["User Service (New)"]
+    B -->|"/api/v2/orders/*"| D["Orders Service (New)"]
+    B -->|"Everything else"| E["Monolith (Legacy)"]
+    subgraph AWS EKS Cluster
+        C
+        D
+        E
+    end
+```
 
-### Technology Stack
-
-| Layer | Technology | Purpose |
-|-------|-----------|---------|
-| Infrastructure | AWS EKS, RDS, MSK, ElastiCache | Managed Kubernetes + data |
-| Service Mesh | Istio | Traffic routing, observability |
-| Monolith | Django 4.2 + DRF | Legacy application |
-| Orders Service | FastAPI | Extracted microservice |
-| User Service | Flask | Extracted microservice |
-| Notifications | Node.js + Express | Event consumer |
-| Frontend | React (Vite) | SPA Storefront |
-| CI/CD | GitHub Actions | Build, test, deploy |
-| Load Testing | K6 | Performance validation |
+> [!IMPORTANT]
+> At **any point** during the migration, you have a fully working system. You can stop, pause, or roll back without any downtime.
 
 ---
 
@@ -38,14 +38,30 @@ The key idea is simple: put a routing layer in front of your monolith that can s
 
 The first step is containerizing the monolith and deploying it to EKS. This gets you onto the platform where you will eventually run your microservices too.
 
-![Phase 1 – Deploy Monolith to EKS](images/phase1_monolith_eks.png)
+![Phase 1 – Deploy Monolith to EKS](/Users/saitarrunpitta/.gemini/antigravity/brain/323e2726-ef37-4e04-aa67-924a1f6dde22/phase1_monolith_eks_1775088712285.png)
 
-### What We Do
+### Containerize the Monolith
 
-1. **Containerize** the Django monolith using a multi-stage Dockerfile
-2. **Add a health endpoint** (`/health/`) for Kubernetes readiness/liveness probes
-3. **Configure resource limits** and pod probes
-4. **Add version labels** (`version: v1`) for Istio routing
+Our Django monolith uses a multi-stage Dockerfile for a small, secure image:
+
+```dockerfile
+# apps/monolith/Dockerfile
+# Stage 1: Builder
+FROM python:3.11-slim as builder
+WORKDIR /app
+COPY requirements.txt .
+RUN pip wheel --no-cache-dir --no-deps --wheel-dir /app/wheels -r requirements.txt
+
+# Stage 2: Final
+FROM python:3.11-slim
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+WORKDIR /app
+COPY --from=builder /app/wheels /wheels
+RUN pip install --no-cache /wheels/*
+COPY . .
+USER appuser
+CMD ["gunicorn", "monolith.wsgi:application", "--bind", "0.0.0.0:8000"]
+```
 
 ### Add a Health Check Endpoint
 
@@ -80,6 +96,9 @@ metadata:
     strangler-fig/role: legacy
 spec:
   replicas: 2
+  selector:
+    matchLabels:
+      app: monolith
   template:
     metadata:
       labels:
@@ -92,17 +111,38 @@ spec:
           ports:
             - containerPort: 8000
           resources:
-            requests: { cpu: 500m, memory: 512Mi }
-            limits: { cpu: "1", memory: 1Gi }
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
           readinessProbe:
-            httpGet: { path: /health/, port: 8000 }
+            httpGet:
+              path: /health/
+              port: 8000
             initialDelaySeconds: 10
           livenessProbe:
-            httpGet: { path: /health/, port: 8000 }
+            httpGet:
+              path: /health/
+              port: 8000
             initialDelaySeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: monolith
+spec:
+  selector:
+    app: monolith
+  ports:
+    - port: 80
+      targetPort: 8000
 ```
 
 ### Provision AWS Infrastructure
+
+The infrastructure is provisioned via Terraform — EKS cluster, RDS PostgreSQL, MSK Kafka, and ElastiCache Redis:
 
 ```bash
 cd infra/terraform
@@ -125,10 +165,6 @@ istioctl install --set profile=default -y
 
 # Enable automatic sidecar injection
 kubectl label namespace default istio-injection=enabled
-
-# Install observability addons (Kiali, Grafana, Jaeger)
-kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.22/samples/addons/kiali.yaml
-kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.22/samples/addons/grafana.yaml
 ```
 
 Or use our automated script:
@@ -137,7 +173,7 @@ Or use our automated script:
 bash infra/istio/install-istio.sh
 ```
 
-### Create the Istio Gateway
+### Create the Gateway
 
 The Gateway defines the external entry point for all traffic into the mesh:
 
@@ -151,11 +187,17 @@ spec:
   selector:
     istio: ingressgateway
   servers:
-    - port: { number: 80, name: http, protocol: HTTP }
-      hosts: ["*"]
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - "*"
 ```
 
-### Apply Initial Routing – All Traffic → Monolith
+### Route Everything to the Monolith (Initial State)
+
+Create a VirtualService that initially routes **all traffic** to the monolith:
 
 ```yaml
 # infra/istio/virtual-service-phase1.yaml
@@ -166,13 +208,17 @@ metadata:
   labels:
     strangler-fig/phase: "1"
 spec:
-  hosts: ["*"]
-  gateways: [strangler-fig-gateway]
+  hosts:
+    - "*"
+  gateways:
+    - strangler-fig-gateway
   http:
+    # All traffic goes to the monolith initially
     - route:
         - destination:
             host: monolith
-            port: { number: 80 }
+            port:
+              number: 80
           weight: 100
 ```
 
@@ -185,14 +231,9 @@ kubectl apply -f infra/istio/virtual-service-phase1.yaml
 
 ## Phase 3: Extract the User Service
 
-Pick a bounded context from the monolith to extract first. Start with something that has clear boundaries and low risk. We chose **user management** because:
+Pick a bounded context from the monolith to extract first. Start with something that has clear boundaries and low risk. We chose **user management**.
 
-- ✅ Clear boundaries — user CRUD is self-contained
-- ✅ Low risk — not on the critical payment path
-- ✅ Simple data model — single table, no complex relationships
-- ✅ Independent — minimal coupling with orders or payments
-
-![Phase 2-3 – Install Istio + Extract User Service](images/phase2_3_istio_extract.png)
+![Phase 2-3 – Install Istio + Extract User Service](/Users/saitarrunpitta/.gemini/antigravity/brain/323e2726-ef37-4e04-aa67-924a1f6dde22/phase2_3_istio_extract_1775088724502.png)
 
 ### Build the New Microservice
 
@@ -200,14 +241,18 @@ We built a Flask microservice with full CRUD operations:
 
 ```python
 # apps/user-svc/main.py
+import os
 from flask import Flask, request, jsonify
 import psycopg2
+import psycopg2.extras
 
 app = Flask(__name__)
+DATABASE_URL = os.environ.get("DATABASE_URL",
+    "postgresql://postgres:postgres@localhost:5432/monolith")
 
 @app.route('/api/users', methods=['GET'])
 def list_users():
-    """List users – previously handled by the monolith."""
+    """List users – this was previously handled by the monolith."""
     page = request.args.get('page', 1, type=int)
     per_page = min(request.args.get('per_page', 50, type=int), 100)
     offset = (page - 1) * per_page
@@ -223,6 +268,18 @@ def list_users():
     conn.close()
     return jsonify({"users": users, "pagination": {...}}), 200
 
+@app.route('/api/users/<int:user_id>', methods=['GET'])
+def get_user(user_id):
+    """Get a single user by ID."""
+    conn = get_db_connection()
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM users_microservice WHERE id = %s", (user_id,))
+        user = cur.fetchone()
+    conn.close()
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    return jsonify(user), 200
+
 @app.route('/api/users', methods=['POST'])
 def create_user():
     """Create a new user."""
@@ -230,21 +287,17 @@ def create_user():
     conn = get_db_connection()
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
-            "INSERT INTO users_microservice (email, name) VALUES (%s, %s) RETURNING *",
+            "INSERT INTO users_microservice (email, name) "
+            "VALUES (%s, %s) RETURNING id, email, name",
             (data['email'], data['name'])
         )
         user = cur.fetchone()
     conn.commit()
+    conn.close()
     return jsonify(user), 201
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    return jsonify({"status": "healthy", "service": "user-svc"}), 200
 ```
 
 ### Deploy Alongside the Monolith
-
-The user-service runs as a separate deployment in the same EKS cluster:
 
 ```yaml
 # infra/k8s/templates/user-svc.yaml
@@ -258,57 +311,87 @@ metadata:
     strangler-fig/phase: "3"
 spec:
   replicas: 2
+  selector:
+    matchLabels:
+      app: user-svc
   template:
+    metadata:
+      labels:
+        app: user-svc
+        version: v1
     spec:
       containers:
         - name: user-svc
           image: user-svc:latest
-          ports: [{ containerPort: 8002 }]
+          ports:
+            - containerPort: 8002
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
           readinessProbe:
-            httpGet: { path: /health, port: 8002 }
+            httpGet:
+              path: /health
+              port: 8002
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: user-svc
 spec:
-  selector: { app: user-svc }
-  ports: [{ port: 80, targetPort: 8002 }]
+  selector:
+    app: user-svc
+  ports:
+    - port: 80
+      targetPort: 8002
 ```
 
 ---
 
 ## Phase 4: Route Traffic to the New Service
 
-Update the VirtualService to route user-related requests to the new microservice while everything else still goes to the monolith.
+Now update the VirtualService to route user-related requests to the new microservice while everything else still goes to the monolith.
 
 ```yaml
 # infra/istio/virtual-service-phase4.yaml
-http:
-  # User endpoints → New User Microservice
-  - match:
-      - uri:
-          prefix: /api/users
-    route:
-      - destination:
-          host: user-svc
-          port: { number: 80 }
-        weight: 100
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: strangler-fig-routing
+  labels:
+    strangler-fig/phase: "4"
+spec:
+  hosts:
+    - "*"
+  gateways:
+    - strangler-fig-gateway
+  http:
+    # User endpoints now go to the new microservice
+    - match:
+        - uri:
+            prefix: /api/users
+      route:
+        - destination:
+            host: user-svc
+            port:
+              number: 80
 
-  # Orders v2 → Orders Microservice (already extracted)
-  - match:
-      - uri:
-          prefix: /api/v2/orders
-    route:
-      - destination:
-          host: orders-svc
-          port: { number: 80 }
+    # Orders v2 go to the orders microservice
+    - match:
+        - uri:
+            prefix: /api/v2/orders
+      route:
+        - destination:
+            host: orders-svc
+            port:
+              number: 80
 
-  # Everything else → Monolith
-  - route:
-      - destination:
-          host: monolith
-          port: { number: 80 }
+    # Everything else still goes to the monolith
+    - route:
+        - destination:
+            host: monolith
+            port:
+              number: 80
 ```
 
 ```bash
@@ -321,45 +404,57 @@ kubectl apply -f infra/istio/virtual-service-phase4.yaml
 
 Before routing all user traffic to the new service, do a **gradual rollout**. Start with 10% of traffic and increase as you gain confidence.
 
-![Phase 5 – Canary Traffic Splitting](images/phase5_canary_split.png)
+![Phase 5 – Canary Traffic Splitting](/Users/saitarrunpitta/.gemini/antigravity/brain/323e2726-ef37-4e04-aa67-924a1f6dde22/phase5_canary_split_1775088755553.png)
 
-### Stage 1: 10% Traffic to User Service
+### Stage 1: 10% Traffic
 
 ```yaml
 # infra/istio/virtual-service-canary-10.yaml
-- match:
-    - uri:
-        prefix: /api/users
-  route:
-    - destination: { host: user-svc }
-      weight: 10       # 10% → new service
-    - destination: { host: monolith }
-      weight: 90       # 90% → monolith
+http:
+  - match:
+      - uri:
+          prefix: /api/users
+    route:
+      # Send 10% of user traffic to the new service
+      - destination:
+          host: user-svc
+          port:
+            number: 80
+        weight: 10
+      # Keep 90% on the monolith
+      - destination:
+          host: monolith
+          port:
+            number: 80
+        weight: 90
 ```
 
-### Stage 2: 50% Traffic (Equal Split)
+### Stage 2: 50% Traffic
 
 ```yaml
 # infra/istio/virtual-service-canary-50.yaml
-  route:
-    - destination: { host: user-svc }
-      weight: 50
-    - destination: { host: monolith }
-      weight: 50
+    route:
+      - destination:
+          host: user-svc
+          weight: 50
+      - destination:
+          host: monolith
+          weight: 50
 ```
 
-### Stage 3: 100% (Full Cutover)
+### Stage 3: 100% Traffic (Full Cutover)
 
 ```yaml
 # infra/istio/virtual-service-canary-100.yaml
-  route:
-    - destination: { host: user-svc }
-      weight: 100
+    route:
+      - destination:
+          host: user-svc
+          weight: 100
 ```
 
 ### Automated Canary Rollout
 
-We built an automated script that progresses through each stage with health checks between stages:
+We built an automated script that progresses through each stage with health checks:
 
 ```bash
 # Interactive mode (confirms between stages)
@@ -371,13 +466,12 @@ bash infra/k8s/scripts/istio_canary_rollout.sh --auto
 
 ### Validate the Traffic Split
 
-Use our K6 canary validation test to statistically verify the split:
+Use our K6 canary validation test to statistically verify the split is correct:
 
 ```bash
 k6 run tests/k6/canary-validation.js --env EXPECTED_WEIGHT=50
 ```
 
-Example output:
 ```
 === Canary Validation Results ===
 Expected split: 50% microservice / 50% monolith
@@ -391,13 +485,13 @@ Result:         ✅ PASS
 
 ## Phase 6: Data Migration Strategy
 
-One of the trickiest parts of the strangler pattern is handling data. Our approach: **dual writes** during the transition period.
+One of the trickiest parts of the strangler pattern is handling data. The monolith has its own database, and the new microservice uses separate tables. Here is our approach using **dual writes** during the transition period.
 
-![Phase 6 – Dual-Write Data Migration Strategy](images/phase6_dual_write.png)
+![Phase 6 – Dual-Write Data Migration Strategy](/Users/saitarrunpitta/.gemini/antigravity/brain/323e2726-ef37-4e04-aa67-924a1f6dde22/phase6_dual_write_1775088765316.png)
 
-### How Dual Writes Work
+### Dual-Write Implementation
 
-During migration, the monolith writes to both its own database AND the user-service database:
+During migration, the monolith writes to both the old DB and the new one. This keeps data in sync while both systems are active.
 
 ```python
 # apps/monolith/core/dual_write.py
@@ -406,7 +500,7 @@ DUAL_WRITE_ENABLED = os.environ.get('DUAL_WRITE_ENABLED', 'true') == 'true'
 USER_SVC_URL = os.environ.get('USER_SVC_URL', 'http://user-svc')
 
 def dual_write_user_http(user_data: dict):
-    """Primary: write via HTTP to the user-service."""
+    """Write user data to the user-service via HTTP POST."""
     if not DUAL_WRITE_ENABLED:
         return None
     try:
@@ -415,11 +509,14 @@ def dual_write_user_http(user_data: dict):
             json=user_data, timeout=5
         )
         if response.status_code in (200, 201):
+            logger.info(f"Dual-write success: {user_data['email']}")
             return response.json()
         elif response.status_code == 409:
-            return None  # Already exists (idempotent)
-    except requests.exceptions.RequestException:
-        return dual_write_user_db(user_data)  # Fallback
+            logger.info(f"User already exists (idempotent)")
+            return None
+    except requests.exceptions.RequestException as e:
+        # Fallback to direct DB write
+        return dual_write_user_db(user_data)
 
 def dual_write_user_db(user_data: dict):
     """Fallback: write directly to the user-service database."""
@@ -434,16 +531,9 @@ def dual_write_user_db(user_data: dict):
     conn.commit()
 ```
 
-### Key Properties
+### Circuit Breaking with Istio
 
-| Property | How It Works |
-|----------|-------------|
-| **Environment-controlled** | Toggle via `DUAL_WRITE_ENABLED=true/false` |
-| **Idempotent** | `ON CONFLICT DO NOTHING` + HTTP 409 handling |
-| **Fault-tolerant** | HTTP failure → direct DB fallback |
-| **Non-blocking** | Failures are logged, never block the primary write |
-
-### Circuit Breaking with Istio DestinationRules
+Istio DestinationRules protect services during the migration:
 
 ```yaml
 # infra/istio/destination-rules.yaml
@@ -455,10 +545,13 @@ spec:
   host: user-svc
   trafficPolicy:
     connectionPool:
-      tcp: { maxConnections: 100 }
-      http: { maxRetries: 3 }
+      tcp:
+        maxConnections: 100
+      http:
+        maxRetries: 3
     outlierDetection:
       consecutive5xxErrors: 5
+      interval: 30s
       baseEjectionTime: 30s
       maxEjectionPercent: 50
 ```
@@ -467,69 +560,105 @@ spec:
 
 ## Phase 7: Remove the Old Code
 
-Once the new service handles 100% of user traffic, remove the user-related code from the monolith. The monolith gets smaller with each extraction.
+Once the new service is handling 100% of user traffic and you've verified everything works, remove the user-related code from the monolith. The monolith gets smaller with each extraction.
 
-![Phase 7 – Final Architecture](images/phase7_final_state.png)
+![Phase 7 – Final Architecture](/Users/saitarrunpitta/.gemini/antigravity/brain/323e2726-ef37-4e04-aa67-924a1f6dde22/phase7_final_state_1775088775018.png)
 
-### Steps
+### Verify No Traffic Reaches the Monolith
 
-1. **Verify no traffic reaches the monolith** for user endpoints
-2. **Disable dual-writes**: `kubectl set env deployment/monolith DUAL_WRITE_ENABLED=false`
-3. **Remove user code** from the monolith codebase
-4. **Rebuild and redeploy** the slimmed monolith
-5. **Apply final routing**: `kubectl apply -f infra/istio/virtual-service-final.yaml`
-6. **Update migration tracker**: `migration-status.yaml`
+```bash
+# Should show zero hits for /api/users
+kubectl logs -l app=monolith --tail=1000 | grep "/api/users"
+```
 
-### Final Routing Configuration
+### Apply the Final Routing Configuration
 
 ```yaml
 # infra/istio/virtual-service-final.yaml
 http:
   # Users → User Microservice
-  - match: [{ uri: { prefix: /api/users }}]
-    route: [{ destination: { host: user-svc, port: { number: 80 }}}]
+  - match:
+      - uri:
+          prefix: /api/users
+    route:
+      - destination:
+          host: user-svc
+          port:
+            number: 80
 
   # Orders → Orders Microservice
-  - match: [{ uri: { prefix: /api/v2/orders }}]
-    route: [{ destination: { host: orders-svc, port: { number: 80 }}}]
+  - match:
+      - uri:
+          prefix: /api/v2/orders
+    route:
+      - destination:
+          host: orders-svc
+          port:
+            number: 80
 
-  # Everything remaining → Monolith (~30% of original)
-  - route: [{ destination: { host: monolith, port: { number: 80 }}}]
+  # Everything remaining → Monolith (shrunk)
+  - route:
+      - destination:
+          host: monolith
+          port:
+            number: 80
 ```
 
-### Rollback (Instant)
-
-At any point, you can roll back to the monolith with a single command:
+### Disable Dual Writes and Clean Up
 
 ```bash
-kubectl apply -f infra/istio/virtual-service-phase1.yaml
+# 1. Disable dual-writes
+kubectl set env deployment/monolith DUAL_WRITE_ENABLED=false
+
+# 2. Remove user-related code from monolith codebase
+# 3. Rebuild and deploy the slimmed-down monolith
+
+# 4. Apply final routing
+kubectl apply -f infra/istio/virtual-service-final.yaml
 ```
 
 ---
 
-## Monitoring & Observability
+## Tracking Migration Progress
 
-### Key Metrics to Watch During Migration
+Keep a clear record of what has been migrated and what remains in the monolith:
 
-| Metric | Source | Threshold |
-|--------|--------|-----------|
-| Error rate (5xx) | Istio | < 1% |
-| P95 latency | Istio | < 500ms |
-| Request rate | Istio | Stable ± 5% |
-| Kafka consumer lag | MSK | < 100 messages |
-| Pod restarts | Kubernetes | 0 |
+```yaml
+# migration-status.yaml
+migration:
+  completed:
+    - name: user-management
+      service: user-svc
+      routes: ["/api/users/*"]
+    - name: order-management
+      service: orders-svc
+      routes: ["/api/v2/orders/*"]
+    - name: notifications
+      service: notifications-svc
+      routes: []  # Event-driven, no HTTP routes
 
-### Access Observability Dashboards
-
-```bash
-istioctl dashboard kiali         # Service mesh topology
-istioctl dashboard grafana       # Metrics & dashboards
-istioctl dashboard jaeger        # Distributed tracing
+  remaining:
+    - name: payment-processing
+    - name: admin-panel
+    - name: static-assets
 ```
 
 ---
 
-## Quick Reference
+## Key Takeaways
+
+> [!TIP]
+> The Strangler Fig pattern lets you migrate **at your own pace** with minimal risk. You can stop at any point and have a working system. Each extracted service is independently deployable and scalable.
+
+The critical tools are:
+1. **Istio VirtualService** — for weight-based traffic splitting and path-based routing
+2. **Canary releases** — to gain confidence before full cutover (10% → 50% → 100%)
+3. **Dual writes** — to keep data consistent between old and new systems
+4. **Circuit breaking** — DestinationRules prevent cascading failures during transition
+5. **K6 load testing** — to compare error rates and latency between implementations
+6. **Instant rollback** — one `kubectl apply` to route everything back to the monolith
+
+### Quick Reference – Commands for Each Phase
 
 | Phase | Description | Command |
 |-------|-------------|---------|
@@ -538,6 +667,45 @@ istioctl dashboard jaeger        # Distributed tracing
 | **3** | Deploy User Service | `helm upgrade --install demo infra/k8s` |
 | **4** | Route users → User Svc | `kubectl apply -f infra/istio/virtual-service-phase4.yaml` |
 | **5** | Canary rollout | `bash infra/k8s/scripts/istio_canary_rollout.sh` |
-| **6** | Enable dual-writes | `kubectl set env deploy/monolith DUAL_WRITE_ENABLED=true` |
+| **6** | Enable dual-writes | `kubectl set env deployment/monolith DUAL_WRITE_ENABLED=true` |
 | **7** | Final state | `kubectl apply -f infra/istio/virtual-service-final.yaml` |
 | **🚨** | **Rollback** | `kubectl apply -f infra/istio/virtual-service-phase1.yaml` |
+
+---
+
+## Project File Reference
+
+### Infrastructure
+| File | Purpose |
+|------|---------|
+| [main.tf](file:///Users/saitarrunpitta/Projects/monolith-microservices-demo/infra/terraform/main.tf) | AWS infrastructure (EKS, RDS, MSK, ElastiCache) |
+| [install-istio.sh](file:///Users/saitarrunpitta/Projects/monolith-microservices-demo/infra/istio/install-istio.sh) | Istio mesh installation |
+| [gateway.yaml](file:///Users/saitarrunpitta/Projects/monolith-microservices-demo/infra/istio/gateway.yaml) | External traffic entry point |
+| [destination-rules.yaml](file:///Users/saitarrunpitta/Projects/monolith-microservices-demo/infra/istio/destination-rules.yaml) | Circuit breaking & retries |
+
+### Istio Routing (Progressive)
+| File | Phase |
+|------|-------|
+| [virtual-service-phase1.yaml](file:///Users/saitarrunpitta/Projects/monolith-microservices-demo/infra/istio/virtual-service-phase1.yaml) | 1 — All → monolith |
+| [virtual-service-phase4.yaml](file:///Users/saitarrunpitta/Projects/monolith-microservices-demo/infra/istio/virtual-service-phase4.yaml) | 4 — Users → user-svc |
+| [virtual-service-canary-10.yaml](file:///Users/saitarrunpitta/Projects/monolith-microservices-demo/infra/istio/virtual-service-canary-10.yaml) | 5a — 10% canary |
+| [virtual-service-canary-50.yaml](file:///Users/saitarrunpitta/Projects/monolith-microservices-demo/infra/istio/virtual-service-canary-50.yaml) | 5b — 50% canary |
+| [virtual-service-canary-100.yaml](file:///Users/saitarrunpitta/Projects/monolith-microservices-demo/infra/istio/virtual-service-canary-100.yaml) | 5c — Full cutover |
+| [virtual-service-final.yaml](file:///Users/saitarrunpitta/Projects/monolith-microservices-demo/infra/istio/virtual-service-final.yaml) | 7 — Final state |
+
+### Applications
+| Service | Directory | Technology |
+|---------|-----------|-----------|
+| [Monolith](file:///Users/saitarrunpitta/Projects/monolith-microservices-demo/apps/monolith) | `apps/monolith/` | Django 4.2 |
+| [Orders Service](file:///Users/saitarrunpitta/Projects/monolith-microservices-demo/apps/orders-svc) | `apps/orders-svc/` | FastAPI |
+| [User Service](file:///Users/saitarrunpitta/Projects/monolith-microservices-demo/apps/user-svc) | `apps/user-svc/` | Flask |
+| [Notifications](file:///Users/saitarrunpitta/Projects/monolith-microservices-demo/apps/notifications-svc) | `apps/notifications-svc/` | Node.js |
+
+### Scripts & Tests
+| File | Purpose |
+|------|---------|
+| [deploy_eks_istio.sh](file:///Users/saitarrunpitta/Projects/monolith-microservices-demo/deploy_eks_istio.sh) | Full deployment script |
+| [istio_canary_rollout.sh](file:///Users/saitarrunpitta/Projects/monolith-microservices-demo/infra/k8s/scripts/istio_canary_rollout.sh) | Canary progression |
+| [rollback.sh](file:///Users/saitarrunpitta/Projects/monolith-microservices-demo/infra/k8s/scripts/rollback.sh) | Emergency rollback |
+| [load-test.js](file:///Users/saitarrunpitta/Projects/monolith-microservices-demo/tests/k6/load-test.js) | K6 load test |
+| [canary-validation.js](file:///Users/saitarrunpitta/Projects/monolith-microservices-demo/tests/k6/canary-validation.js) | Traffic split validation |
