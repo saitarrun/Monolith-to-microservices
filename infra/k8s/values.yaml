@@ -14,6 +14,18 @@ notifications:
   image: notifications-svc:latest
   replicas: 1
 
+# User microservice – extracted from monolith (Strangler Fig Phase 3)
+users:
+  image: user-svc:latest
+  replicas: 2
+  service:
+    port: 8002
+
 ingress:
   enabled: true
   host: demo.local
+
+# Istio configuration
+istio:
+  enabled: true
+  gateway: strangler-fig-gateway

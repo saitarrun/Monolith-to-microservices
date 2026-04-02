@@ -1,0 +1,104 @@
+# =============================================================================
+# Strangler Fig Migration Status Tracker
+# =============================================================================
+# Tracks which bounded contexts have been extracted from the monolith.
+# Update this file as each phase progresses.
+# =============================================================================
+
+migration:
+  project: monolith-microservices-demo
+  strategy: strangler-fig
+  infrastructure: AWS EKS + Istio Service Mesh
+  started: "2026-04-01"
+
+  # -----------------------------------------------------------
+  # Completed Extractions
+  # -----------------------------------------------------------
+  completed:
+    - name: order-management
+      service: orders-svc
+      language: Python (FastAPI)
+      migrated: "2026-04-01"
+      routes:
+        - "/api/v2/orders/*"
+      data_strategy: Kafka dual-write from monolith → orders-svc consumer
+      notes: >
+        Orders are created in the monolith (v1), dual-written to Kafka,
+        and consumed by orders-svc which stores them in a separate table.
+        The v2 API reads from the microservice table.
+
+    - name: notifications
+      service: notifications-svc
+      language: Node.js (Express)
+      migrated: "2026-04-01"
+      routes: []  # No HTTP routes – purely event-driven
+      data_strategy: Kafka consumer (orders.created topic)
+      notes: >
+        Notifications service consumes Kafka events and sends emails.
+        No HTTP routing needed – operates as an event-driven consumer.
+
+    - name: user-management
+      service: user-svc
+      language: Python (Flask)
+      migrated: "2026-04-01"
+      routes:
+        - "/api/users"
+        - "/api/users/*"
+      data_strategy: Dual-write (HTTP + direct DB fallback)
+      notes: >
+        Extracted as Phase 3 of the Strangler Fig migration.
+        Uses dual-write pattern to keep monolith and microservice DBs in sync.
+        Canary rollout: 10% → 50% → 100%.
+
+  # -----------------------------------------------------------
+  # In Progress
+  # -----------------------------------------------------------
+  in_progress: []
+
+  # -----------------------------------------------------------
+  # Remaining in Monolith (To Be Extracted)
+  # -----------------------------------------------------------
+  remaining:
+    - name: payment-processing
+      routes:
+        - "/api/v1/create-payment-intent/"
+        - "/api/v1/stripe-webhook/"
+      priority: medium
+      complexity: high
+      notes: >
+        Stripe integration. Tightly coupled with order creation.
+        Consider extracting after order v1 is fully deprecated.
+
+    - name: admin-panel
+      routes:
+        - "/admin/*"
+      priority: low
+      complexity: low
+      notes: >
+        Django admin panel. Low traffic, low risk.
+        Could be last to extract or kept as-is.
+
+    - name: static-assets
+      routes:
+        - "/static/*"
+      priority: low
+      complexity: low
+      notes: >
+        Static file serving. Consider moving to CDN or Cloud Storage.
+
+  # -----------------------------------------------------------
+  # Traffic Routing State
+  # -----------------------------------------------------------
+  current_routing:
+    phase: "7-final"
+    config: "infra/istio/virtual-service-final.yaml"
+    breakdown:
+      - path: "/api/users/*"
+        destination: user-svc
+        weight: 100
+      - path: "/api/v2/orders/*"
+        destination: orders-svc
+        weight: 100
+      - path: "/*"
+        destination: monolith
+        weight: 100

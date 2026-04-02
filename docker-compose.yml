@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   db:
     image: postgres:14
@@ -53,6 +51,9 @@ services:
       DATABASE_URL: postgres://postgres:postgres@db:5432/monolith
       REDIS_URL: redis://redis:6379/0
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      # Strangler Fig Phase 6: Dual-write to user-svc
+      DUAL_WRITE_ENABLED: "true"
+      USER_SVC_URL: http://user-svc:8002
 
   orders-svc:
     build:
@@ -70,6 +71,22 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       KAFKA_GROUP_ID: orders-svc-local
       PORT: 8001
+
+  # Strangler Fig Phase 3: Extracted User Microservice
+  user-svc:
+    build:
+      context: ./apps/user-svc
+    command: gunicorn main:app --bind 0.0.0.0:8002 --reload
+    volumes:
+      - ./apps/user-svc:/app
+    ports:
+      - "8002:8002"
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@db:5432/monolith
+      PORT: 8002
+      DEBUG: "true"
 
   notifications-svc:
     build:
@@ -108,6 +125,7 @@ services:
     depends_on:
       - monolith
       - orders-svc
+      - user-svc
 
 volumes:
   postgres_data:

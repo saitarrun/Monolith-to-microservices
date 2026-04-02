@@ -1,0 +1,25 @@
+# =============================================================================
+# Istio Gateway – Strangler Fig Entry Point
+# =============================================================================
+# The Gateway defines the external entry point for all traffic into the mesh.
+# All VirtualService routing rules reference this gateway.
+# =============================================================================
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: strangler-fig-gateway
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: strangler-fig-migration
+spec:
+  selector:
+    istio: ingressgateway  # Use Istio's built-in ingress gateway
+  servers:
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - "demo.local"              # Local development
+        - "*.example.com"           # Production wildcard
+        - "*"                       # Catch-all for demo purposes

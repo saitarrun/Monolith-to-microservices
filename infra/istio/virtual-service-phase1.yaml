@@ -1,0 +1,33 @@
+# =============================================================================
+# Phase 1 VirtualService – ALL Traffic → Monolith
+# =============================================================================
+# This is the starting state. Every request entering the mesh is forwarded
+# to the monolith. No microservice routing exists yet.
+#
+# Strangler Fig Phase: 1 (Baseline)
+# =============================================================================
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: strangler-fig-routing
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: strangler-fig-migration
+    strangler-fig/phase: "1"
+  annotations:
+    description: "Phase 1 – All traffic routed to the monolith"
+spec:
+  hosts:
+    - "*"
+  gateways:
+    - strangler-fig-gateway
+  http:
+    # -------------------------------------------------------
+    # Catch-all: Everything goes to the monolith
+    # -------------------------------------------------------
+    - route:
+        - destination:
+            host: monolith
+            port:
+              number: 80
+          weight: 100

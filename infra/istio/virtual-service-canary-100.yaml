@@ -1,0 +1,59 @@
+# =============================================================================
+# Phase 5c – Canary 100% User Traffic → User Service (Full Cutover)
+# =============================================================================
+# All /api/users traffic now goes to the new user-service.
+# The monolith no longer handles user requests.
+#
+# Strangler Fig Phase: 5 (Full Cutover – equivalent to Phase 4 final state)
+# =============================================================================
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: strangler-fig-routing
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: strangler-fig-migration
+    strangler-fig/phase: "5-cutover-100"
+  annotations:
+    description: "Phase 5 – Full cutover: 100% user traffic to user-service"
+spec:
+  hosts:
+    - "*"
+  gateways:
+    - strangler-fig-gateway
+  http:
+    # -------------------------------------------------------
+    # User endpoints → User Service (100%)
+    # -------------------------------------------------------
+    - match:
+        - uri:
+            prefix: /api/users
+      route:
+        - destination:
+            host: user-svc
+            port:
+              number: 80
+          weight: 100
+
+    # -------------------------------------------------------
+    # Orders v2 → Orders Microservice (100%)
+    # -------------------------------------------------------
+    - match:
+        - uri:
+            prefix: /api/v2/orders
+      route:
+        - destination:
+            host: orders-svc
+            port:
+              number: 80
+          weight: 100
+
+    # -------------------------------------------------------
+    # Catch-all → Monolith (remaining functionality)
+    # -------------------------------------------------------
+    - route:
+        - destination:
+            host: monolith
+            port:
+              number: 80
+          weight: 100

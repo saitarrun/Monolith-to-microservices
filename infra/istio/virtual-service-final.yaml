@@ -1,0 +1,69 @@
+# =============================================================================
+# Final VirtualService – Post-Migration State
+# =============================================================================
+# This is the target end-state of the Strangler Fig migration.
+# All extracted services handle their own traffic. The monolith only handles
+# functionality that hasn't been extracted yet (admin, billing, reporting).
+#
+# Strangler Fig Phase: 7 (Final)
+# =============================================================================
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: strangler-fig-routing
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: strangler-fig-migration
+    strangler-fig/phase: "7-final"
+  annotations:
+    description: "Phase 7 – Final state: all extracted services routed independently"
+spec:
+  hosts:
+    - "*"
+  gateways:
+    - strangler-fig-gateway
+  http:
+    # -------------------------------------------------------
+    # User Management → User Microservice
+    # -------------------------------------------------------
+    - match:
+        - uri:
+            prefix: /api/users
+      route:
+        - destination:
+            host: user-svc
+            port:
+              number: 80
+          weight: 100
+
+    # -------------------------------------------------------
+    # Orders (v2) → Orders Microservice
+    # -------------------------------------------------------
+    - match:
+        - uri:
+            prefix: /api/v2/orders
+      route:
+        - destination:
+            host: orders-svc
+            port:
+              number: 80
+          weight: 100
+
+    # -------------------------------------------------------
+    # Notifications → handled internally via Kafka
+    # (No HTTP route needed – Kafka consumer)
+    # -------------------------------------------------------
+
+    # -------------------------------------------------------
+    # Remaining functionality → Monolith (to be extracted later)
+    #   - Admin panel (/admin/)
+    #   - Legacy orders v1 (/api/v1/orders/)
+    #   - Payment/Stripe endpoints (/api/v1/create-payment-intent/, /api/v1/stripe-webhook/)
+    #   - Static files
+    # -------------------------------------------------------
+    - route:
+        - destination:
+            host: monolith
+            port:
+              number: 80
+          weight: 100

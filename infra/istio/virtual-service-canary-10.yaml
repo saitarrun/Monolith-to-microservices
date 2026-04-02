@@ -1,0 +1,64 @@
+# =============================================================================
+# Phase 5a – Canary 10% User Traffic → User Service
+# =============================================================================
+# Begin gradual rollout. Only 10% of /api/users traffic goes to the
+# new user-service. The remaining 90% stays on the monolith.
+#
+# Strangler Fig Phase: 5 (Canary at 10%)
+# =============================================================================
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: strangler-fig-routing
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: strangler-fig-migration
+    strangler-fig/phase: "5-canary-10"
+  annotations:
+    description: "Phase 5 – Canary: 10% user traffic to user-service"
+spec:
+  hosts:
+    - "*"
+  gateways:
+    - strangler-fig-gateway
+  http:
+    # -------------------------------------------------------
+    # User endpoints – 10/90 canary split
+    # -------------------------------------------------------
+    - match:
+        - uri:
+            prefix: /api/users
+      route:
+        - destination:
+            host: user-svc
+            port:
+              number: 80
+          weight: 10
+        - destination:
+            host: monolith
+            port:
+              number: 80
+          weight: 90
+
+    # -------------------------------------------------------
+    # Orders v2 → Orders Microservice
+    # -------------------------------------------------------
+    - match:
+        - uri:
+            prefix: /api/v2/orders
+      route:
+        - destination:
+            host: orders-svc
+            port:
+              number: 80
+          weight: 100
+
+    # -------------------------------------------------------
+    # Catch-all → Monolith
+    # -------------------------------------------------------
+    - route:
+        - destination:
+            host: monolith
+            port:
+              number: 80
+          weight: 100

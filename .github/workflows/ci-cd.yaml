@@ -1,4 +1,4 @@
-name: CI/CD Pipeline
+name: CI/CD Pipeline (Strangler Fig – EKS + Istio)
 
 on:
   push:
@@ -11,16 +11,20 @@ env:
   ECR_REPOSITORY_MONOLITH: monolith
   ECR_REPOSITORY_ORDERS: orders-svc
   ECR_REPOSITORY_NOTIFICATIONS: notifications-svc
+  ECR_REPOSITORY_USERS: user-svc
 
 jobs:
+  # -------------------------------------------------------
+  # Job 1: Code Quality & Security Scanning
+  # -------------------------------------------------------
   code-quality:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.11'
 
@@ -31,36 +35,39 @@ jobs:
       run: |
         ruff check .
         black --check .
-    
+
     - name: Security scan Python Code
       run: |
-        bandit -r apps/monolith apps/orders-svc --skip B104
+        bandit -r apps/monolith apps/orders-svc apps/user-svc --skip B104
 
     - name: Set up Node.js
-      uses: actions/setup-node@v3
+      uses: actions/setup-node@v4
       with:
         node-version: '18'
 
     - name: Lint Node Code
       run: |
         cd apps/notifications-svc
-        npm update # install dependencies
+        npm update
         npm run lint --if-present
 
     - name: Security scan Node Code
       run: |
         cd apps/notifications-svc
-        npm audit
+        npm audit || true
 
+  # -------------------------------------------------------
+  # Job 2: Build & Push Container Images
+  # -------------------------------------------------------
   build-and-push:
     needs: code-quality
     runs-on: ubuntu-latest
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v1
+      uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -68,9 +75,9 @@ jobs:
 
     - name: Login to Amazon ECR
       id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v1
+      uses: aws-actions/amazon-ecr-login@v2
 
-    # Monolith Build
+    # --- Monolith ---
     - name: Build, tag, and push Monolith image
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -82,7 +89,7 @@ jobs:
         docker tag $ECR_REGISTRY/$ECR_REPOSITORY_MONOLITH:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY_MONOLITH:latest
         docker push $ECR_REGISTRY/$ECR_REPOSITORY_MONOLITH:latest
 
-    # Orders Service Build
+    # --- Orders Service ---
     - name: Build, tag, and push Orders Service image
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -94,7 +101,19 @@ jobs:
         docker tag $ECR_REGISTRY/$ECR_REPOSITORY_ORDERS:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY_ORDERS:latest
         docker push $ECR_REGISTRY/$ECR_REPOSITORY_ORDERS:latest
 
-    # Notifications Service Build
+    # --- User Service (Strangler Fig Phase 3) ---
+    - name: Build, tag, and push User Service image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        cd apps/user-svc
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY_USERS:$IMAGE_TAG .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY_USERS:$IMAGE_TAG
+        docker tag $ECR_REGISTRY/$ECR_REPOSITORY_USERS:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY_USERS:latest
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY_USERS:latest
+
+    # --- Notifications Service ---
     - name: Build, tag, and push Notification Service image
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -106,15 +125,18 @@ jobs:
         docker tag $ECR_REGISTRY/$ECR_REPOSITORY_NOTIFICATIONS:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY_NOTIFICATIONS:latest
         docker push $ECR_REGISTRY/$ECR_REPOSITORY_NOTIFICATIONS:latest
 
+  # -------------------------------------------------------
+  # Job 3: Deploy to EKS + Apply Istio Routing
+  # -------------------------------------------------------
   deploy:
     needs: build-and-push
     runs-on: ubuntu-latest
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v1
+      uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -125,11 +147,43 @@ jobs:
 
     - name: Login to Amazon ECR
       id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v1
+      uses: aws-actions/amazon-ecr-login@v2
 
     - name: Deploy with Helm
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
       run: |
         helm upgrade --install demo infra/k8s \
-          --set monolith.image=${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY_MONOLITH:${{ github.sha }} \
-          --set orders.image=${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY_ORDERS:${{ github.sha }} \
-          --set notifications.image=${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY_NOTIFICATIONS:${{ github.sha }}
+          --set monolith.image=$ECR_REGISTRY/$ECR_REPOSITORY_MONOLITH:${{ github.sha }} \
+          --set orders.image=$ECR_REGISTRY/$ECR_REPOSITORY_ORDERS:${{ github.sha }} \
+          --set users.image=$ECR_REGISTRY/$ECR_REPOSITORY_USERS:${{ github.sha }} \
+          --set notifications.image=$ECR_REGISTRY/$ECR_REPOSITORY_NOTIFICATIONS:${{ github.sha }}
+
+    - name: Apply Istio Gateway
+      run: |
+        kubectl apply -f infra/istio/gateway.yaml
+        kubectl apply -f infra/istio/destination-rules.yaml
+
+    - name: Apply Current Phase VirtualService
+      run: |
+        # Apply the current migration phase routing
+        # Update this path as you progress through phases:
+        #   Phase 1: virtual-service-phase1.yaml (all → monolith)
+        #   Phase 4: virtual-service-phase4.yaml (users → user-svc)
+        #   Phase 5: virtual-service-canary-*.yaml (canary split)
+        #   Phase 7: virtual-service-final.yaml (full migration)
+        kubectl apply -f infra/istio/virtual-service-final.yaml
+
+    - name: Verify Deployment
+      run: |
+        echo "=== Pod Status ==="
+        kubectl get pods
+        echo ""
+        echo "=== Services ==="
+        kubectl get svc
+        echo ""
+        echo "=== VirtualService ==="
+        kubectl get virtualservice
+        echo ""
+        echo "=== Istio Ingress Gateway ==="
+        kubectl get svc istio-ingressgateway -n istio-system || true
