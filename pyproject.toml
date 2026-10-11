@@ -1,0 +1,17 @@
+[tool.ruff.lint]
+# Explicit, stable rule selection.
+# CI installs the latest ruff/black/bandit via `pip install` with no pins,
+# and ruff's default rule set grows over time. Pinning `select` keeps
+# `ruff check .` deterministic instead of failing on every new ruff release.
+#
+# Selected rules target real defects, not framework idioms:
+#   E4/E7/E9/F  - syntax-adjacent errors, undefined names, unused imports/vars
+#   I          - isort import ordering
+#   UP         - pyupgrade modernization (py311 target)
+#
+# Deliberately NOT enabled (false positives for this codebase):
+#   BLE (blind-except)  - broad `except` in request handlers / consumer loops
+#                         is intentional: log-and-continue, never crash
+#   RUF012              - flags Django model/migration class attributes
+#   B008                - flags idiomatic FastAPI `Depends(get_db)` defaults
+select = ["E4", "E7", "E9", "F", "I", "UP"]
