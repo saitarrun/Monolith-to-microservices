@@ -1,61 +1,69 @@
-from rest_framework import generics
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-from .models import Order
-from .serializers import OrderSerializer
-from .kafka import producer
-import stripe
+import json
 import os
 import uuid
-from django.views.decorators.csrf import csrf_exempt
-from django.utils.decorators import method_decorator
-import json
 
-stripe.api_key = os.environ.get('STRIPE_SECRET_KEY', 'sk_test_placeholder')
+import stripe
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
+from rest_framework import generics, status
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from .kafka import producer
+from .models import Order
+from .serializers import OrderSerializer
+
+stripe.api_key = os.environ.get("STRIPE_SECRET_KEY", "sk_test_placeholder")
+
 
 class CreatePaymentIntentView(APIView):
     def post(self, request):
         try:
             # In a real app, calculate amount from DB product price
-            amount = int(request.data.get('amount', 0) * 100) # Stripe needs cents
-            
+            amount = int(request.data.get("amount", 0) * 100)  # Stripe needs cents
+
             intent = stripe.PaymentIntent.create(
                 amount=amount,
-                currency='usd',
-                metadata={'product_id': request.data.get('product_id'), 'user_id': request.data.get('user_id')}
+                currency="usd",
+                metadata={
+                    "product_id": request.data.get("product_id"),
+                    "user_id": request.data.get("user_id"),
+                },
             )
-            return Response({'client_secret': intent.client_secret})
+            return Response({"client_secret": intent.client_secret})
         except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-@method_decorator(csrf_exempt, name='dispatch')
+
+@method_decorator(csrf_exempt, name="dispatch")
 class StripeWebhookView(APIView):
     def post(self, request):
         payload = request.body
-        sig_header = request.META.get('HTTP_STRIPE_SIGNATURE')
-        endpoint_secret = os.environ.get('STRIPE_WEBHOOK_SECRET', '')
+        sig_header = request.META.get("HTTP_STRIPE_SIGNATURE")
+        endpoint_secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 
         try:
             if endpoint_secret:
-                event = stripe.Webhook.construct_event(payload, sig_header, endpoint_secret)
+                event = stripe.Webhook.construct_event(
+                    payload, sig_header, endpoint_secret
+                )
             else:
                 # If no secret configured (local dev), just parse JSON
                 event = stripe.Event.construct_from(json.loads(payload), stripe.api_key)
-        except ValueError as e:
+        except ValueError:
             return Response(status=status.HTTP_400_BAD_REQUEST)
-        except stripe.error.SignatureVerificationError as e:
+        except stripe.error.SignatureVerificationError:
             return Response(status=status.HTTP_400_BAD_REQUEST)
 
         # Handle the event
-        if event.type == 'payment_intent.succeeded':
+        if event.type == "payment_intent.succeeded":
             # Use to_dict() to safely use .get() on the object and its metadata
             payment_intent = event.data.object
-            
+
             # Simple helper to get from Stripe metadata which might be a StripeObject
             def get_metadata(obj, key, default):
-                meta = getattr(obj, 'metadata', {})
-                if hasattr(meta, 'get'):
+                meta = getattr(obj, "metadata", {})
+                if hasattr(meta, "get"):
                     return meta.get(key, default)
                 try:
                     return meta[key]
@@ -64,27 +72,28 @@ class StripeWebhookView(APIView):
 
             # 1. Create Order in Monolith DB
             order = Order.objects.create(
-                user_id=get_metadata(payment_intent, 'user_id', 1),
-                product_id=get_metadata(payment_intent, 'product_id', 'unknown'),
+                user_id=get_metadata(payment_intent, "user_id", 1),
+                product_id=get_metadata(payment_intent, "product_id", "unknown"),
                 amount=payment_intent.amount / 100.0,
-                status='PAID' # Set to PAID immediately since Stripe confirmed
+                status="PAID",  # Set to PAID immediately since Stripe confirmed
             )
-            
+
             # 2. Dual-Write to Kafka using Saga pattern
             event_id = str(uuid.uuid4())
             event_data = {
-                'event_id': event_id,
-                'id': order.id,
-                'user_id': order.user_id,
-                'product_id': order.product_id,
-                'amount': float(order.amount),
-                'status': order.status,
-                'created_at': order.created_at.isoformat()
+                "event_id": event_id,
+                "id": order.id,
+                "user_id": order.user_id,
+                "product_id": order.product_id,
+                "amount": float(order.amount),
+                "status": order.status,
+                "created_at": order.created_at.isoformat(),
             }
-            producer.publish_message('orders.created', order.id, event_data)
+            producer.publish_message("orders.created", order.id, event_data)
             producer.flush()
 
         return Response(status=status.HTTP_200_OK)
+
 
 class OrderListCreateView(generics.ListCreateAPIView):
     queryset = Order.objects.all()
@@ -95,13 +104,13 @@ class OrderListCreateView(generics.ListCreateAPIView):
         order = serializer.save()
         event_id = str(uuid.uuid4())
         event_data = {
-            'event_id': event_id,
-            'id': order.id,
-            'user_id': order.user_id,
-            'product_id': order.product_id,
-            'amount': float(order.amount),
-            'status': order.status,
-            'created_at': order.created_at.isoformat()
+            "event_id": event_id,
+            "id": order.id,
+            "user_id": order.user_id,
+            "product_id": order.product_id,
+            "amount": float(order.amount),
+            "status": order.status,
+            "created_at": order.created_at.isoformat(),
         }
-        producer.publish_message('orders.created', order.id, event_data)
+        producer.publish_message("orders.created", order.id, event_data)
         producer.flush()
