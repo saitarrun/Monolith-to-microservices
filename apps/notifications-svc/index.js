@@ -19,7 +19,7 @@ const run = async () => {
     await consumer.subscribe({ topic: 'orders.created', fromBeginning: true });
 
     await consumer.run({
-        eachMessage: async ({ topic, partition, message }) => {
+        eachMessage: async ({ message }) => {
             const order = JSON.parse(message.value.toString());
             console.log(`[Notification] Sending email for Order ID: ${order.id}`);
             // Simulate email sending
