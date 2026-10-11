@@ -1,8 +1,8 @@
 import os
-from flask import Flask, request, jsonify
+
 import psycopg2
 import psycopg2.extras
-from datetime import datetime, timezone
+from flask import Flask, jsonify, request
 
 # =============================================================================
 # User Microservice
@@ -17,8 +17,7 @@ from datetime import datetime, timezone
 app = Flask(__name__)
 
 DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    "postgresql://postgres:postgres@localhost:5432/monolith"
+    "DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/monolith"
 )
 
 
@@ -56,7 +55,7 @@ def init_db():
 # -------------------------------------------------------
 # Health Check
 # -------------------------------------------------------
-@app.route('/health', methods=['GET'])
+@app.route("/health", methods=["GET"])
 def health_check():
     """Health check endpoint for Kubernetes readiness/liveness probes."""
     try:
@@ -72,15 +71,15 @@ def health_check():
 # -------------------------------------------------------
 # List Users
 # -------------------------------------------------------
-@app.route('/api/users', methods=['GET'])
-@app.route('/api/users/', methods=['GET'])
+@app.route("/api/users", methods=["GET"])
+@app.route("/api/users/", methods=["GET"])
 def list_users():
     """List all users with pagination.
-    
+
     Previously handled by the monolith – now served by this microservice.
     """
-    page = request.args.get('page', 1, type=int)
-    per_page = request.args.get('per_page', 50, type=int)
+    page = request.args.get("page", 1, type=int)
+    per_page = request.args.get("per_page", 50, type=int)
     per_page = min(per_page, 100)  # Cap at 100
     offset = (page - 1) * per_page
 
@@ -90,27 +89,36 @@ def list_users():
             cur.execute(
                 "SELECT id, email, name, created_at, updated_at FROM users_microservice "
                 "ORDER BY created_at DESC LIMIT %s OFFSET %s",
-                (per_page, offset)
+                (per_page, offset),
             )
             users = cur.fetchall()
 
             cur.execute("SELECT COUNT(*) as total FROM users_microservice")
-            total = cur.fetchone()['total']
+            total = cur.fetchone()["total"]
 
         # Serialize datetime objects
         for user in users:
-            user['created_at'] = user['created_at'].isoformat() if user['created_at'] else None
-            user['updated_at'] = user['updated_at'].isoformat() if user['updated_at'] else None
+            user["created_at"] = (
+                user["created_at"].isoformat() if user["created_at"] else None
+            )
+            user["updated_at"] = (
+                user["updated_at"].isoformat() if user["updated_at"] else None
+            )
 
-        return jsonify({
-            "users": users,
-            "pagination": {
-                "page": page,
-                "per_page": per_page,
-                "total": total,
-                "pages": (total + per_page - 1) // per_page
-            }
-        }), 200
+        return (
+            jsonify(
+                {
+                    "users": users,
+                    "pagination": {
+                        "page": page,
+                        "per_page": per_page,
+                        "total": total,
+                        "pages": (total + per_page - 1) // per_page,
+                    },
+                }
+            ),
+            200,
+        )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
@@ -120,7 +128,7 @@ def list_users():
 # -------------------------------------------------------
 # Get Single User
 # -------------------------------------------------------
-@app.route('/api/users/<int:user_id>', methods=['GET'])
+@app.route("/api/users/<int:user_id>", methods=["GET"])
 def get_user(user_id):
     """Get a single user by ID."""
     conn = get_db_connection()
@@ -128,15 +136,19 @@ def get_user(user_id):
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 "SELECT id, email, name, created_at, updated_at FROM users_microservice WHERE id = %s",
-                (user_id,)
+                (user_id,),
             )
             user = cur.fetchone()
 
         if not user:
             return jsonify({"error": "User not found"}), 404
 
-        user['created_at'] = user['created_at'].isoformat() if user['created_at'] else None
-        user['updated_at'] = user['updated_at'].isoformat() if user['updated_at'] else None
+        user["created_at"] = (
+            user["created_at"].isoformat() if user["created_at"] else None
+        )
+        user["updated_at"] = (
+            user["updated_at"].isoformat() if user["updated_at"] else None
+        )
 
         return jsonify(user), 200
     except Exception as e:
@@ -148,8 +160,8 @@ def get_user(user_id):
 # -------------------------------------------------------
 # Create User
 # -------------------------------------------------------
-@app.route('/api/users', methods=['POST'])
-@app.route('/api/users/', methods=['POST'])
+@app.route("/api/users", methods=["POST"])
+@app.route("/api/users/", methods=["POST"])
 def create_user():
     """Create a new user."""
     data = request.get_json()
@@ -157,8 +169,8 @@ def create_user():
     if not data:
         return jsonify({"error": "Request body is required"}), 400
 
-    email = data.get('email')
-    name = data.get('name')
+    email = data.get("email")
+    name = data.get("name")
 
     if not email or not name:
         return jsonify({"error": "Both 'email' and 'name' are required"}), 400
@@ -170,13 +182,17 @@ def create_user():
                 """INSERT INTO users_microservice (email, name, created_at, updated_at)
                    VALUES (%s, %s, NOW(), NOW())
                    RETURNING id, email, name, created_at, updated_at""",
-                (email, name)
+                (email, name),
             )
             user = cur.fetchone()
         conn.commit()
 
-        user['created_at'] = user['created_at'].isoformat() if user['created_at'] else None
-        user['updated_at'] = user['updated_at'].isoformat() if user['updated_at'] else None
+        user["created_at"] = (
+            user["created_at"].isoformat() if user["created_at"] else None
+        )
+        user["updated_at"] = (
+            user["updated_at"].isoformat() if user["updated_at"] else None
+        )
 
         return jsonify(user), 201
     except psycopg2.errors.UniqueViolation:
@@ -192,7 +208,7 @@ def create_user():
 # -------------------------------------------------------
 # Update User
 # -------------------------------------------------------
-@app.route('/api/users/<int:user_id>', methods=['PUT'])
+@app.route("/api/users/<int:user_id>", methods=["PUT"])
 def update_user(user_id):
     """Update an existing user."""
     data = request.get_json()
@@ -204,12 +220,12 @@ def update_user(user_id):
     try:
         fields = []
         values = []
-        if 'email' in data:
+        if "email" in data:
             fields.append("email = %s")
-            values.append(data['email'])
-        if 'name' in data:
+            values.append(data["email"])
+        if "name" in data:
             fields.append("name = %s")
-            values.append(data['name'])
+            values.append(data["name"])
 
         if not fields:
             return jsonify({"error": "No fields to update"}), 400
@@ -219,9 +235,11 @@ def update_user(user_id):
 
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
-                f"UPDATE users_microservice SET {', '.join(fields)} WHERE id = %s "
+                # SET clause is built only from hardcoded column names above;
+                # all user values are passed as parameters.
+                f"UPDATE users_microservice SET {', '.join(fields)} WHERE id = %s "  # nosec B608
                 "RETURNING id, email, name, created_at, updated_at",
-                values
+                values,
             )
             user = cur.fetchone()
         conn.commit()
@@ -229,8 +247,12 @@ def update_user(user_id):
         if not user:
             return jsonify({"error": "User not found"}), 404
 
-        user['created_at'] = user['created_at'].isoformat() if user['created_at'] else None
-        user['updated_at'] = user['updated_at'].isoformat() if user['updated_at'] else None
+        user["created_at"] = (
+            user["created_at"].isoformat() if user["created_at"] else None
+        )
+        user["updated_at"] = (
+            user["updated_at"].isoformat() if user["updated_at"] else None
+        )
 
         return jsonify(user), 200
     except psycopg2.errors.UniqueViolation:
@@ -246,15 +268,14 @@ def update_user(user_id):
 # -------------------------------------------------------
 # Delete User
 # -------------------------------------------------------
-@app.route('/api/users/<int:user_id>', methods=['DELETE'])
+@app.route("/api/users/<int:user_id>", methods=["DELETE"])
 def delete_user(user_id):
     """Delete a user."""
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "DELETE FROM users_microservice WHERE id = %s RETURNING id",
-                (user_id,)
+                "DELETE FROM users_microservice WHERE id = %s RETURNING id", (user_id,)
             )
             deleted = cur.fetchone()
         conn.commit()
@@ -276,6 +297,10 @@ def delete_user(user_id):
 # Initialize DB on startup
 init_db()
 
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 8002))
-    app.run(host='0.0.0.0', port=port, debug=os.environ.get('DEBUG', 'false').lower() == 'true')
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8002))
+    app.run(
+        host="0.0.0.0",
+        port=port,
+        debug=os.environ.get("DEBUG", "false").lower() == "true",
+    )
