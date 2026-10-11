@@ -1,6 +1,8 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime
-from database import Base
 import datetime
+
+from database import Base
+from sqlalchemy import Column, DateTime, Float, Integer, String
+
 
 class Order(Base):
     __tablename__ = "orders_microservice"
@@ -11,12 +13,13 @@ class Order(Base):
     amount = Column(Float)
     status = Column(String)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
-    
+
     # For backfill/verification
-    original_id = Column(Integer, unique=True, index=True) 
+    original_id = Column(Integer, unique=True, index=True)
+
 
 class IdempotentEvent(Base):
     __tablename__ = "idempotent_events"
-    
+
     event_id = Column(String, primary_key=True, index=True)
     processed_at = Column(DateTime, default=datetime.datetime.utcnow)
