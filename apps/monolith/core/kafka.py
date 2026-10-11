@@ -1,19 +1,21 @@
 import json
 import logging
-from django.conf import settings
+
 from confluent_kafka import Producer
+from django.conf import settings
 
 logger = logging.getLogger(__name__)
+
 
 class KafkaProducer:
     _instance = None
 
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super(KafkaProducer, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
             conf = {
-                'bootstrap.servers': settings.KAFKA_BOOTSTRAP_SERVERS,
-                'client.id': 'monolith-producer'
+                "bootstrap.servers": settings.KAFKA_BOOTSTRAP_SERVERS,
+                "client.id": "monolith-producer",
             }
             cls._instance.producer = Producer(conf)
         return cls._instance
@@ -24,7 +26,7 @@ class KafkaProducer:
                 topic,
                 key=str(key),
                 value=json.dumps(value),
-                callback=self.delivery_report
+                callback=self.delivery_report,
             )
             self.producer.poll(0)
         except Exception as e:
@@ -38,5 +40,6 @@ class KafkaProducer:
 
     def flush(self):
         self.producer.flush()
+
 
 producer = KafkaProducer()
