@@ -1,17 +1,17 @@
-import asyncio
-from fastapi import FastAPI, Depends
-from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
-from contextlib import asynccontextmanager
 import threading
+from contextlib import asynccontextmanager
+
 import database
 import models
 from consumer import run_consumer
-
+from fastapi import Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
+from sqlalchemy.orm import Session
 
 # Create tables
 models.Base.metadata.create_all(bind=database.engine)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -19,6 +19,7 @@ async def lifespan(app: FastAPI):
     consumer_thread = threading.Thread(target=run_consumer, daemon=True)
     consumer_thread.start()
     yield
+
 
 app = FastAPI(title="Orders Microservice", version="2.0.0", lifespan=lifespan)
 
@@ -33,6 +34,7 @@ app.add_middleware(
 # Add Prometheus Instrumentator
 Instrumentator().instrument(app).expose(app)
 
+
 # Dependency
 def get_db():
     db = database.SessionLocal()
@@ -41,10 +43,12 @@ def get_db():
     finally:
         db.close()
 
+
 @app.get("/api/v2/orders/")
 def read_orders(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     orders = db.query(models.Order).offset(skip).limit(limit).all()
     return orders
+
 
 @app.get("/health")
 def health_check():
